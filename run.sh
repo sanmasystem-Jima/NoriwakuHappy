@@ -10,4 +10,5 @@ if [ ! -d ".venv" ]; then
     .venv/bin/pip install -r requirements.txt
 fi
 
+export LIBGL_ALWAYS_SOFTWARE=1
 exec .venv/bin/python3 main.py
