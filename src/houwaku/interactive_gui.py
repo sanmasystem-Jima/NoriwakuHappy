@@ -12,6 +12,9 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -163,6 +166,11 @@ EXPORT_FOLDER_WINDOW = "ig_export_folder_window"
 EXPORT_FOLDER_INPUT = "ig_export_folder_input"  # デスクトップ出力フォルダ名。書き出すたびに新規作成する前提で、提案名をユーザーが承認・修正する
 EXPORT_FOLDER_STATUS = "ig_export_folder_status"
 
+EXPORT_DONE_WINDOW = "ig_export_done_window"
+EXPORT_DONE_TEXT = "ig_export_done_text"
+
+INTRO_WINDOW = "ig_intro_window"
+
 MODE_DRAW = "境界を描く(頂点)"
 MODE_EDGE = "境界を描く(辺をクリック)"
 
@@ -198,6 +206,7 @@ _state = {
     "selected_member_key": None,  # クリックして選択中の部材(member_key)。(種別, キー)のタプル
     "recovered_member_keys": set(),  # 「元の中心線のまま復帰する」を選んだ部材のキー(クリップをスキップする)
     "lath_area": None,  # float | None ラス面積(m2)。ラス網展開図読込直後にユーザーへ確認・入力してもらう
+    "last_export_dir": None,  # Path | None 直近で書き出したフォルダ(出力後に開くか確認するために保持)
 }
 
 
@@ -1032,6 +1041,7 @@ def _on_export_dxf(sender, app_data) -> None:
     manual_beams = manual_beams or None
     manual_posts = manual_posts or None
     try:
+        Path(file_path).parent.mkdir(parents=True, exist_ok=True)
         export_stages(
             file_path,
             _state["shape"],
@@ -1059,11 +1069,68 @@ def _on_export_dxf(sender, app_data) -> None:
 
         dpg.set_value(
             STATUS_TAG,
-            f"DXFと計算書を書き出しました: {file_path} / {report_path}(2秒後にウィンドウを閉じます)",
+            f"DXFと計算書を書き出しました: {file_path} / {report_path}",
         )
-        _state["close_at"] = time.monotonic() + AUTO_CLOSE_DELAY_S
+        _state["last_export_dir"] = Path(file_path).parent
+        dpg.set_value(EXPORT_DONE_TEXT, f"出力フォルダを開きますか?\n{_state['last_export_dir']}")
+        dpg.show_item(EXPORT_DONE_WINDOW)
     except Exception as exc:  # noqa: BLE001
         dpg.set_value(STATUS_TAG, f"DXF書き出しエラー: {exc}")
+
+
+def _open_folder(folder: Path) -> None:
+    try:
+        if os.name == "nt":
+            os.startfile(str(folder))  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(folder)])
+        else:
+            subprocess.Popen(["xdg-open", str(folder)])
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _on_export_done_open_folder() -> None:
+    folder = _state.get("last_export_dir")
+    if folder is not None:
+        _open_folder(folder)
+    dpg.hide_item(EXPORT_DONE_WINDOW)
+    _state["close_at"] = time.monotonic() + AUTO_CLOSE_DELAY_S
+
+
+def _on_export_done_skip() -> None:
+    dpg.hide_item(EXPORT_DONE_WINDOW)
+    _state["close_at"] = time.monotonic() + AUTO_CLOSE_DELAY_S
+
+
+def _on_intro_confirmed() -> None:
+    dpg.hide_item(INTRO_WINDOW)
+    dpg.show_item("open_mesh_dxf_dialog")
+
+
+def _get_viewport_size(
+    default: tuple[int, int] = (1600, 1000),
+    margin: int = 80,
+    minimum: tuple[int, int] = (800, 600),
+) -> tuple[int, int]:
+    """実行PCの画面解像度より少しだけ小さいウィンドウサイズを返す。
+
+    画面解像度が取得できない環境では既定サイズにフォールバックする。
+    """
+    try:
+        import tkinter
+
+        root = tkinter.Tk()
+        root.withdraw()
+        screen_w = root.winfo_screenwidth()
+        screen_h = root.winfo_screenheight()
+        root.destroy()
+    except Exception:  # noqa: BLE001
+        return default
+
+    width = max(minimum[0], screen_w - margin)
+    height = max(minimum[1], screen_h - margin)
+    return width, height
 
 
 def build_gui() -> None:
@@ -1074,6 +1141,8 @@ def build_gui() -> None:
         with dpg.font("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 18) as font:
             pass
         dpg.bind_font(font)
+        with dpg.font("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 28) as large_font:
+            pass
 
     with dpg.file_dialog(
         directory_selector=False, show=False, callback=_on_load_mesh_dxf, tag="open_mesh_dxf_dialog",
@@ -1106,6 +1175,22 @@ def build_gui() -> None:
         dpg.add_file_extension(".*")
 
     with dpg.window(
+        tag=INTRO_WINDOW, label="用意するものリスト", show=False, modal=True,
+        width=520, height=300, no_close=True,
+    ):
+        intro_title = dpg.add_text("用意するものリスト")
+        dpg.bind_item_font(intro_title, large_font)
+        dpg.add_separator()
+        intro_body = dpg.add_text(
+            "1. ラス展開図・面積\n"
+            "2. 割付図(中心線のみ)\n"
+            "3. 法枠の規格(サイズ・ピッチ)と中詰め仕様(種類・厚さ)"
+        )
+        dpg.bind_item_font(intro_body, large_font)
+        dpg.add_separator()
+        dpg.add_button(label="確認しました。始める", callback=_on_intro_confirmed)
+
+    with dpg.window(
         tag=EXPORT_FOLDER_WINDOW, label="保存フォルダ名を確認してください", show=False, modal=True,
         width=420, height=180, no_close=True,
     ):
@@ -1115,6 +1200,16 @@ def build_gui() -> None:
         dpg.add_input_text(label="フォルダ名", tag=EXPORT_FOLDER_INPUT)
         dpg.add_text("", tag=EXPORT_FOLDER_STATUS, color=(255, 120, 120, 255))
         dpg.add_button(label="このフォルダ名で書き出す", callback=_on_export_folder_confirmed)
+
+    with dpg.window(
+        tag=EXPORT_DONE_WINDOW, label="書き出し完了", show=False, modal=True,
+        width=420, height=160, no_close=True,
+    ):
+        dpg.add_text("", tag=EXPORT_DONE_TEXT, wrap=380)
+        dpg.add_separator()
+        with dpg.group(horizontal=True):
+            dpg.add_button(label="フォルダを開く", callback=_on_export_done_open_folder)
+            dpg.add_button(label="開かない", callback=_on_export_done_skip)
 
     with dpg.window(
         tag=LATH_AREA_WINDOW, label="ラス面積を確認してください", show=False, modal=True,
@@ -1256,13 +1351,14 @@ def build_gui() -> None:
     # 必要な幅はずっと小さい。画面より大きくならないよう、内容に合わせた
     # 控えめな既定サイズにする(resizable=Trueなので、必要ならユーザーが
     # 手動で広げられる)。
-    dpg.create_viewport(title="法枠 仮割付プロトタイプ", width=1600, height=1000, resizable=True)
+    viewport_w, viewport_h = _get_viewport_size()
+    dpg.create_viewport(title="法枠 仮割付プロトタイプ", width=viewport_w, height=viewport_h, resizable=True)
     dpg.setup_dearpygui()
     dpg.show_viewport()
     dpg.set_primary_window("main_window", True)
 
     _redraw()
-    dpg.show_item("open_mesh_dxf_dialog")
+    dpg.show_item(INTRO_WINDOW)
 
     while dpg.is_dearpygui_running():
         dpg.render_dearpygui_frame()
