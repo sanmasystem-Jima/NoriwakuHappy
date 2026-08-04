@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+
+# Working DXF files (inputs/outputs, not source)
+*.dxf
+*.dxf.bak
+*.dismissed_warnings.json
+
+# Editor / OS
+.DS_Store

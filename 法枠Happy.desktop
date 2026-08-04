@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=法枠Happy
+Comment=法枠展開図から自動図面・数量生成ツール
+Exec=/media/jima/ボリューム/法枠Happy/run.sh
+Path=/media/jima/ボリューム/法枠Happy
+Terminal=false
+Categories=Utility;
